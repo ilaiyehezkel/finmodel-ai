@@ -73,13 +73,22 @@ Apply: (1) Scorecard method, (2) Berkus method, (3) First Chicago method with 3 
 
 // ── Suggestions ─────────────────────────────────────────────────
 
-const SUGGESTIONS = [
+const PRO_SUGGESTIONS = [
   "Build a DCF model for a SaaS company with $2M ARR growing 80% YoY",
   "Model a cap table for a startup raising a $3M seed at $12M pre-money",
   "Calculate LTV/CAC ratio given $50 monthly revenue, 85% retention, $200 CAC",
   "3-statement model for a business with $500K revenue and 60% gross margin",
   "LBO model for acquiring a company at 8x EBITDA with 60% debt financing",
   "Revenue forecast for a marketplace with 1,000 users and 5% monthly growth",
+];
+
+const SIMPLE_SUGGESTIONS = [
+  "Walk me through a DCF model step by step",
+  "Explain what a cap table is and build me a simple one",
+  "What is LTV and CAC? Show me an example",
+  "Build me a basic 3-statement model and explain each part",
+  "What's an LBO? Walk me through it like I'm new to finance",
+  "Help me understand profit margins with a real example",
 ];
 
 // ── Table utilities ─────────────────────────────────────────────
@@ -432,6 +441,7 @@ export default function Home() {
   };
 
   const isEmpty = messages.length === 0;
+  const suggestions = simpleMode ? SIMPLE_SUGGESTIONS : PRO_SUGGESTIONS;
 
   return (
     <>
@@ -518,7 +528,7 @@ export default function Home() {
               <div className="empty-title">Build any financial model</div>
               <div className="empty-sub">DCF · LBO · Cap Tables · Unit Economics · Forecasts</div>
               <div className="suggestions-grid">
-                {SUGGESTIONS.map((s, i) => (
+                {suggestions.map((s, i) => (
                   <button key={i} className="suggestion-btn" onClick={() => sendMessage(s)}>
                     {s}
                   </button>
