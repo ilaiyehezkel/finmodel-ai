@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-export const runtime = "edge";
 
 const SYSTEM_PROMPT = `You are a world-class financial analyst and modeling expert. You specialize in:
 
