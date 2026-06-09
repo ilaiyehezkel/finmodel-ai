@@ -59,9 +59,8 @@ export async function POST(req) {
     });
 
     if (!response.ok) {
-      const errText = await response.text();
       return NextResponse.json(
-        { error: `Anthropic API error: ${errText}` },
+        { error: "API request failed. Please try again." },
         { status: response.status }
       );
     }
@@ -72,7 +71,7 @@ export async function POST(req) {
     return NextResponse.json({ reply });
   } catch (err) {
     return NextResponse.json(
-      { error: "Internal server error: " + err.message },
+      { error: "Something went wrong. Please try again." },
       { status: 500 }
     );
   }
