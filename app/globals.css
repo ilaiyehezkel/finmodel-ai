@@ -9,17 +9,17 @@
 }
 
 :root {
-  --bg:           #09090b;           /* zinc-950 */
-  --bg-2:         #0f0f12;
-  --bg-3:         #18181b;           /* zinc-900 */
-  --border:       #27272a;           /* zinc-800 */
-  --border-2:     #3f3f46;           /* zinc-700 */
-  --text:         #f4f4f5;           /* zinc-100 */
-  --text-2:       #a1a1aa;           /* zinc-400 */
-  --text-3:       #52525b;           /* zinc-600 */
+  --bg:           #0f1117;           /* dark navy, not pure black */
+  --bg-2:         #161b27;
+  --bg-3:         #1e2333;
+  --border:       #2a2d3a;
+  --border-2:     #3d4460;
+  --text:         #ffffff;
+  --text-2:       #94a3b8;           /* slate-400 */
+  --text-3:       #4a5568;           /* slate-600 */
   --amber:        #f59e0b;
   --amber-dim:    rgba(245, 158, 11, 0.08);
-  --amber-border: rgba(245, 158, 11, 0.28);
+  --amber-border: rgba(245, 158, 11, 0.35);
   --red:          #f43f5e;
   --mono:         "IBM Plex Mono", monospace;
 }
@@ -134,14 +134,14 @@ html, body {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: var(--text-2);
+  color: var(--text);
   text-transform: uppercase;
   margin-bottom: 5px;
 }
 
 .empty-sub {
   font-size: 10px;
-  color: var(--text-3);
+  color: #94a3b8;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   margin-bottom: 36px;
@@ -158,7 +158,7 @@ html, body {
 .suggestion-btn {
   background: transparent;
   border: 1px solid var(--border);
-  color: var(--text-3);
+  color: var(--text);
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.45;
@@ -170,19 +170,20 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  transition: border-color 0.1s, color 0.1s;
+  transition: border-color 0.1s, color 0.1s, box-shadow 0.1s;
 }
 
 .suggestion-btn:hover {
   border-color: var(--border-2);
-  color: var(--text-2);
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 0 12px rgba(245, 158, 11, 0.08);
 }
 
 .suggestion-text { flex: 1; min-width: 0; }
 
 .suggestion-arrow {
   flex-shrink: 0;
-  color: var(--text-3);
+  color: var(--text-2);
   font-size: 13px;
   transition: transform 0.1s, color 0.1s;
 }
@@ -424,7 +425,7 @@ html, body {
   caret-color: var(--amber);
 }
 
-.input-wrap textarea::placeholder { color: var(--text-3); }
+.input-wrap textarea::placeholder { color: #64748b; }
 
 .send-btn {
   background: var(--amber);
@@ -583,7 +584,7 @@ html, body {
 .sidebar-toggle {
   background: none;
   border: 1px solid var(--border);
-  color: var(--text-3);
+  color: var(--text-2);
   border-radius: 2px;
   width: 30px;
   height: 30px;
@@ -610,7 +611,7 @@ html, body {
   background: none;
   border: none;
   border-right: 1px solid var(--border);
-  color: var(--text-3);
+  color: var(--text-2);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
@@ -642,7 +643,7 @@ html, body {
   background: var(--bg-2);
   border: 1px solid var(--border);
   box-shadow: 0 1px 0 0 var(--border);
-  color: var(--text-3);
+  color: #94a3b8;
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
