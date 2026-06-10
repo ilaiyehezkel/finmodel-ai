@@ -485,7 +485,7 @@ export default function Home() {
               <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
             </svg>
           </button>
-          <div className="logo">$</div>
+          <div className="logo">FM</div>
           <div className="header-text">
             <h1>FinModel AI</h1>
             <p>Financial Modeling Assistant</p>
@@ -524,13 +524,17 @@ export default function Home() {
         <div className="chat-area">
           {isEmpty ? (
             <div className="empty-state">
-              <div className="empty-icon">📊</div>
+              <svg className="empty-graph" viewBox="0 0 280 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <polyline points="0,48 40,36 80,38 120,22 160,26 200,10 240,14 280,4" stroke="rgba(245,158,11,0.18)" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
+                <polyline points="0,48 40,44 80,42 120,34 160,36 200,24 240,19 280,16" stroke="rgba(255,255,255,0.04)" strokeWidth="1" strokeLinejoin="round" fill="none"/>
+              </svg>
               <div className="empty-title">Build any financial model</div>
               <div className="empty-sub">DCF · LBO · Cap Tables · Unit Economics · Forecasts</div>
               <div className="suggestions-grid">
                 {suggestions.map((s, i) => (
                   <button key={i} className="suggestion-btn" onClick={() => sendMessage(s)}>
-                    {s}
+                    <span className="suggestion-text">{s}</span>
+                    <span className="suggestion-arrow">→</span>
                   </button>
                 ))}
               </div>
