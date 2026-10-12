@@ -77,18 +77,12 @@ const PRO_SUGGESTIONS = [
   "Build a DCF model for a SaaS company with $2M ARR growing 80% YoY",
   "Model a cap table for a startup raising a $3M seed at $12M pre-money",
   "Calculate LTV/CAC ratio given $50 monthly revenue, 85% retention, $200 CAC",
-  "3-statement model for a business with $500K revenue and 60% gross margin",
-  "LBO model for acquiring a company at 8x EBITDA with 60% debt financing",
-  "Revenue forecast for a marketplace with 1,000 users and 5% monthly growth",
 ];
 
 const SIMPLE_SUGGESTIONS = [
   "Walk me through a DCF model step by step",
   "Explain what a cap table is and build me a simple one",
   "What is LTV and CAC? Show me an example",
-  "Build me a basic 3-statement model and explain each part",
-  "What's an LBO? Walk me through it like I'm new to finance",
-  "Help me understand profit margins with a real example",
 ];
 
 // ── Table utilities ─────────────────────────────────────────────
@@ -115,12 +109,54 @@ function parseMarkdownTables(text) {
   return tables;
 }
 
+function stripTables(text) {
+  return text.replace(/(\|.+\|\n?)+/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// ── Row / cell classification for the spreadsheet view ──────────
+
+const SECTION_KEYWORDS = [
+  "revenue", "ebitda", "ebit", "gross profit", "operating income",
+  "free cash flow", "net income",
+];
+
+const TOTAL_KEYWORDS = [
+  "total", "subtotal", "sum", "enterprise value", "equity value",
+  "terminal value", "purchase price", "irr", "moic", "sources", "uses",
+  "valuation", "implied value",
+];
+
+function rowClass(row) {
+  const text = row.join(" ").toLowerCase().replace(/\*/g, "");
+  if (TOTAL_KEYWORDS.some((kw) => text.includes(kw))) return "row-total";
+  if (SECTION_KEYWORDS.some((kw) => text.includes(kw))) return "row-section";
+  return "";
+}
+
+function displayCell(raw) {
+  const s = String(raw ?? "").trim().replace(/\*\*/g, "");
+  if (!s || s === "-" || s === "—" || s.toLowerCase() === "n/a") return { text: s, numeric: false };
+
+  // Already parenthesized, e.g. "(1,234)"
+  if (/^\(.+\)$/.test(s) && /\d/.test(s)) return { text: s, numeric: true };
+
+  const isNumericLike = /^-?\$?-?[\d,.]+%?[xX]?$/.test(s.replace(/\s/g, ""));
+  if (!isNumericLike) return { text: s, numeric: false };
+
+  const isNegative = /^-/.test(s) || /\$-/.test(s);
+  if (isNegative) {
+    const positive = s.replace("-", "");
+    return { text: `(${positive})`, numeric: true };
+  }
+  return { text: s, numeric: true };
+}
+
 // ── Excel export colours & constants ───────────────────────────
 
 const CLR = {
-  green:     "00D084",
-  greenSoft: "D6F5EA",
-  greenDark: "004D2E",
+  teal:      "14B8A6",
+  tealSoft:  "CFF5EF",
+  tealDark:  "0B5E54",
   black:     "000000",
   white:     "FFFFFF",
   rowAlt:    "F2F2F5",
@@ -195,7 +231,7 @@ function parseCell(raw) {
   return { v: s, t: "s" };
 }
 
-function exportToExcel(text, msgIdx) {
+function exportToExcel(text) {
   const tables = parseMarkdownTables(text);
   if (!tables.length) { alert("No tables found in this response."); return; }
 
@@ -220,7 +256,7 @@ function exportToExcel(text, msgIdx) {
       v: c === 0 ? modelType : "",
       t: "s",
       s: {
-        fill: { fgColor: { rgb: CLR.green } },
+        fill: { fgColor: { rgb: CLR.teal } },
         font: { bold: true, sz: 16, color: { rgb: CLR.black } },
         alignment: { horizontal: "left", vertical: "center" },
       },
@@ -260,10 +296,10 @@ function exportToExcel(text, msgIdx) {
         v: table.headers[c],
         t: "s",
         s: {
-          fill: { fgColor: { rgb: CLR.green } },
+          fill: { fgColor: { rgb: CLR.teal } },
           font: { bold: true, sz: 10, color: { rgb: CLR.black } },
           alignment: { horizontal: c === 0 ? "left" : "center", vertical: "center" },
-          border: { bottom: { style: "medium", color: { rgb: "008050" } } },
+          border: { bottom: { style: "medium", color: { rgb: "0E8C7F" } } },
         },
       });
     }
@@ -272,7 +308,7 @@ function exportToExcel(text, msgIdx) {
     // Data rows
     table.rows.forEach((row, rIdx) => {
       const isSummary = isSummaryRow(row);
-      const bg = isSummary ? CLR.greenSoft : rIdx % 2 === 0 ? CLR.white : CLR.rowAlt;
+      const bg = isSummary ? CLR.tealSoft : rIdx % 2 === 0 ? CLR.white : CLR.rowAlt;
 
       for (let c = 0; c < cols; c++) {
         const cellVal = row[c] ?? "";
@@ -284,7 +320,7 @@ function exportToExcel(text, msgIdx) {
           font: {
             bold: isSummary || isFirst,
             sz: 10,
-            color: { rgb: isSummary ? CLR.greenDark : CLR.dark },
+            color: { rgb: isSummary ? CLR.tealDark : CLR.dark },
           },
           alignment: {
             horizontal: isFirst ? "left" : parsed.t === "n" ? "right" : "center",
@@ -294,8 +330,8 @@ function exportToExcel(text, msgIdx) {
 
         if (isSummary) {
           style.border = {
-            top: { style: "thin", color: { rgb: "00A068" } },
-            bottom: { style: "thin", color: { rgb: "00A068" } },
+            top: { style: "thin", color: { rgb: "10A696" } },
+            bottom: { style: "thin", color: { rgb: "10A696" } },
           };
         }
 
@@ -334,17 +370,17 @@ function exportToExcel(text, msgIdx) {
 function exportToPDF(htmlContent) {
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-body{font-family:monospace;font-size:13px;line-height:1.7;color:#111;padding:40px 56px;max-width:860px;margin:0 auto}
-h1{font-size:22px;margin:16px 0 6px}h2{font-size:18px;margin:14px 0 6px}h3{font-size:15px;color:#006b3c;margin:12px 0 6px}
+body{font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.7;color:#111;padding:40px 56px;max-width:860px;margin:0 auto}
+h1{font-size:22px;margin:16px 0 6px}h2{font-size:18px;margin:14px 0 6px}h3{font-size:15px;color:#0f766e;margin:12px 0 6px}
 p{margin:0 0 10px}
-table{width:100%;border-collapse:collapse;margin:14px 0;font-size:12px;page-break-inside:avoid}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:12px;page-break-inside:avoid;font-family:"Courier New",monospace}
 th{background:#f2f2f2;padding:8px 12px;border:1px solid #ccc;text-align:left;font-weight:600;font-size:11px;letter-spacing:.04em}
 td{padding:7px 12px;border:1px solid #ddd}tr:nth-child(even) td{background:#fafafa}
 code{background:#f4f4f4;padding:2px 5px;border-radius:3px;font-size:12px}
 pre{background:#f4f4f4;padding:14px;border-radius:6px;margin:10px 0}pre code{background:none;padding:0}
 strong{color:#000}ul{padding-left:18px;margin:8px 0}li{margin:3px 0}
-.ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #006b3c;padding-bottom:12px;margin-bottom:24px}
-.ph-title{color:#006b3c;font-size:18px;font-weight:600;margin:0}.ph-sub{color:#666;font-size:11px}
+.ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0f766e;padding-bottom:12px;margin-bottom:24px}
+.ph-title{color:#0f766e;font-size:18px;font-weight:600;margin:0}.ph-sub{color:#666;font-size:11px}
 </style></head><body>
 <div class="ph"><span class="ph-title">FinModel AI</span><span class="ph-sub">Financial Modeling Assistant</span></div>
 ${htmlContent}
@@ -367,6 +403,8 @@ export default function Home() {
   const [simpleMode, setSimpleMode] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState(null);
   const [modal, setModal] = useState(null);
+  const [mobileTab, setMobileTab] = useState("chat");
+  const [templateSel, setTemplateSel] = useState("");
 
   const bottomRef = useRef(null);
   const msgRefs = useRef({});
@@ -383,6 +421,19 @@ export default function Home() {
     return acc;
   }, []);
 
+  // Latest assistant message that contains a model (table)
+  let latestModel = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "assistant") {
+      const tables = parseMarkdownTables(m.content);
+      if (tables.length) {
+        latestModel = { idx: i, content: m.content, tables, modelType: detectModelType(m.content) };
+        break;
+      }
+    }
+  }
+
   const sendMessage = async (text) => {
     const userMsg = text !== undefined ? text : input.trim();
     if (!userMsg || loading) return;
@@ -393,6 +444,7 @@ export default function Home() {
     const next = [...messages, { role: "user", content: userMsg }];
     setMessages(next);
     setLoading(true);
+    setMobileTab("chat");
 
     try {
       const res = await fetch("/api/chat", {
@@ -448,7 +500,7 @@ export default function Home() {
       {/* Sidebar */}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-head">
-          <span className="sidebar-title">Session Models</span>
+          <span className="sidebar-title">Model history</span>
           <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>×</button>
         </div>
         <div className="sidebar-list">
@@ -460,6 +512,8 @@ export default function Home() {
                 key={n}
                 className="sidebar-item"
                 onClick={() => {
+                  setSidebarOpen(false);
+                  setMobileTab("chat");
                   msgRefs.current[item.idx]?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
               >
@@ -473,160 +527,197 @@ export default function Home() {
       {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
 
       {/* Main app */}
-      <div className="app">
-        {/* Header */}
-        <div className="header">
-          <button
-            className="sidebar-toggle"
-            onClick={() => setSidebarOpen((o) => !o)}
-            title="Toggle model history"
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-              <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" />
-            </svg>
-          </button>
-          <div className="logo">FM</div>
-          <div className="header-text">
-            <h1>FinModel AI</h1>
-            <p>Financial Modeling Assistant</p>
-          </div>
-          <div className="mode-toggle">
-            <button
-              className={`mode-btn ${!simpleMode ? "active" : ""}`}
-              onClick={() => setSimpleMode(false)}
-            >
-              Pro
-            </button>
-            <button
-              className={`mode-btn ${simpleMode ? "active" : ""}`}
-              onClick={() => setSimpleMode(true)}
-            >
-              Simple
-            </button>
-          </div>
-          <div className="header-badge">● Live</div>
-        </div>
-
-        {/* Template bar */}
-        <div className="template-bar">
-          {TEMPLATES.map((t) => (
-            <button
-              key={t.label}
-              className="template-btn"
-              onClick={() => { setInput(t.prompt); textareaRef.current?.focus(); }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Chat area */}
-        <div className="chat-area">
-          {isEmpty ? (
-            <div className="empty-state">
-              <svg className="empty-graph" viewBox="0 0 280 52" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <polyline points="0,48 40,36 80,38 120,22 160,26 200,10 240,14 280,4" stroke="rgba(245,158,11,0.18)" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
-                <polyline points="0,48 40,44 80,42 120,34 160,36 200,24 240,19 280,16" stroke="rgba(255,255,255,0.04)" strokeWidth="1" strokeLinejoin="round" fill="none"/>
-              </svg>
-              <div className="empty-title">Build any financial model</div>
-              <div className="empty-sub">DCF · LBO · Cap Tables · Unit Economics · Forecasts</div>
-              <div className="suggestions-grid">
-                {suggestions.map((s, i) => (
-                  <button key={i} className="suggestion-btn" onClick={() => sendMessage(s)}>
-                    <span className="suggestion-text">{s}</span>
-                    <span className="suggestion-arrow">→</span>
-                  </button>
-                ))}
-              </div>
+      <div className="app-shell">
+        {/* Top bar */}
+        <div className="topbar">
+          <span className="wordmark">FinModel</span>
+          <div className="topbar-right">
+            <div className="mode-toggle">
+              <button
+                className={`mode-btn ${!simpleMode ? "active" : ""}`}
+                onClick={() => setSimpleMode(false)}
+              >
+                Pro
+              </button>
+              <button
+                className={`mode-btn ${simpleMode ? "active" : ""}`}
+                onClick={() => setSimpleMode(true)}
+              >
+                Simple
+              </button>
             </div>
-          ) : (
-            <>
-              {messages.length > 2 && (
-                <button className="clear-btn" onClick={() => setMessages([])}>clear chat</button>
-              )}
-              {messages.map((m, i) => {
-                const hasTables = m.role === "assistant" && parseMarkdownTables(m.content).length > 0;
-                return (
-                  <div
-                    key={i}
-                    className={`message ${m.role}`}
-                    ref={(el) => { if (el) msgRefs.current[i] = el; }}
-                  >
-                    <div className="message-label">{m.role === "user" ? "YOU" : "ANALYST"}</div>
-                    <div
-                      className="message-content"
-                      dangerouslySetInnerHTML={{ __html: formatMessage(m.content) }}
-                    />
-                    {m.role === "assistant" && (
-                      <div className="msg-actions">
-                        <button className="act-btn" onClick={() => copyMsg(m.content, i)}>
-                          {copiedIdx === i ? "Copied!" : "Copy"}
-                        </button>
-                        {hasTables && (
-                          <button className="act-btn" onClick={() => exportToExcel(m.content, i)}>
-                            ↓ Excel
-                          </button>
-                        )}
-                        <button
-                          className="act-btn"
-                          onClick={() => {
-                            const el = msgRefs.current[i]?.querySelector(".message-content");
-                            exportToPDF(el?.innerHTML || "");
-                          }}
-                        >
-                          ↓ PDF
-                        </button>
-                        {hasTables && (
-                          <button className="act-btn act-btn--hi" onClick={() => openModal(m.content)}>
-                            Edit Assumptions
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {loading && (
-                <div className="message assistant">
-                  <div className="message-label">ANALYST</div>
-                  <div className="typing-indicator">
-                    <span /><span /><span />
+            <button className="history-btn" onClick={() => setSidebarOpen((o) => !o)}>
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z" /></svg>
+              History
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile tab bar */}
+        <div className="mobile-tabbar">
+          <button className={`mobile-tab ${mobileTab === "chat" ? "active" : ""}`} onClick={() => setMobileTab("chat")}>
+            Chat
+          </button>
+          <button className={`mobile-tab ${mobileTab === "model" ? "active" : ""}`} onClick={() => setMobileTab("model")}>
+            Model
+          </button>
+        </div>
+
+        {/* Workspace */}
+        <div className="workspace">
+          {/* Left pane — chat */}
+          <section className={`pane pane-chat ${mobileTab === "chat" ? "mobile-active" : ""}`}>
+            <div className="chat-scroll">
+              {isEmpty ? (
+                <div className="chat-empty">
+                  <div className="chat-empty-title">What do you want to model?</div>
+                  <div className="chat-empty-examples">
+                    {suggestions.map((s, i) => (
+                      <button key={i} className="example-link" onClick={() => sendMessage(s)}>
+                        {s}
+                      </button>
+                    ))}
                   </div>
                 </div>
+              ) : (
+                <>
+                  {messages.length > 2 && (
+                    <button className="clear-btn" onClick={() => setMessages([])}>Clear chat</button>
+                  )}
+                  {messages.map((m, i) => {
+                    const displayText = m.role === "assistant"
+                      ? (stripTables(m.content) || "Model updated — see the Model panel.")
+                      : m.content;
+                    return (
+                      <div
+                        key={i}
+                        className={`message ${m.role}`}
+                        ref={(el) => { if (el) msgRefs.current[i] = el; }}
+                      >
+                        <div className="message-label">{m.role === "user" ? "You" : "Analyst"}</div>
+                        <div
+                          className="message-content"
+                          dangerouslySetInnerHTML={{ __html: formatMessage(displayText) }}
+                        />
+                        {m.role === "assistant" && (
+                          <div className="msg-foot">
+                            <button className="copy-link" onClick={() => copyMsg(m.content, i)}>
+                              {copiedIdx === i ? "Copied" : "Copy"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {loading && (
+                    <div className="message assistant">
+                      <div className="message-label">Analyst</div>
+                      <div className="typing-indicator">
+                        <span /><span /><span />
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
-            </>
-          )}
-          <div ref={bottomRef} />
-        </div>
+              <div ref={bottomRef} />
+            </div>
 
-        {/* Input area */}
-        <div className="input-area">
-          <div className="input-wrap">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = e.target.scrollHeight + "px";
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Describe a company or scenario to model..."
-              rows={1}
-            />
-            <button
-              className="send-btn"
-              onClick={() => sendMessage()}
-              disabled={!input.trim() || loading}
-            >
-              <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z" /></svg>
-            </button>
-          </div>
-          {error && <div className="error-msg">{error}</div>}
-          <div className="input-hint">
-            SHIFT+ENTER for new line · ENTER to send
-            {simpleMode && <span className="simple-badge"> · SIMPLE MODE ON</span>}
-          </div>
+            {/* Composer */}
+            <div className="composer">
+              <div className="composer-toolbar">
+                <select
+                  className="template-select"
+                  value={templateSel}
+                  onChange={(e) => {
+                    const t = TEMPLATES.find((tpl) => tpl.label === e.target.value);
+                    if (t) { setInput(t.prompt); textareaRef.current?.focus(); }
+                    setTemplateSel("");
+                  }}
+                >
+                  <option value="" disabled>Model type…</option>
+                  {TEMPLATES.map((t) => (
+                    <option key={t.label} value={t.label}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="composer-input">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = e.target.scrollHeight + "px";
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Describe a company or scenario to model..."
+                  rows={1}
+                />
+                <button
+                  className="send-btn"
+                  onClick={() => sendMessage()}
+                  disabled={!input.trim() || loading}
+                >
+                  <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z" /></svg>
+                </button>
+              </div>
+              {error && <div className="error-msg">{error}</div>}
+              <div className="composer-hint">Shift+Enter for new line · Enter to send</div>
+            </div>
+          </section>
+
+          {/* Right pane — model */}
+          <section className={`pane pane-model ${mobileTab === "model" ? "mobile-active" : ""}`}>
+            <div className="model-panel-head">
+              <span className="model-panel-title">{latestModel ? latestModel.modelType : "Model"}</span>
+              {latestModel && (
+                <div className="model-panel-actions">
+                  <button className="panel-btn" onClick={() => copyMsg(latestModel.content, latestModel.idx)}>
+                    {copiedIdx === latestModel.idx ? "Copied" : "Copy"}
+                  </button>
+                  <button className="panel-btn" onClick={() => exportToExcel(latestModel.content)}>Excel</button>
+                  <button className="panel-btn" onClick={() => exportToPDF(formatMessage(latestModel.content))}>PDF</button>
+                  <button className="panel-btn panel-btn--primary" onClick={() => openModal(latestModel.content)}>
+                    Edit assumptions
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="model-panel-body">
+              {!latestModel ? (
+                <div className="model-empty">
+                  <div className="model-empty-grid" />
+                  <p className="model-empty-text">Your model will appear here.</p>
+                </div>
+              ) : (
+                latestModel.tables.map((table, ti) => (
+                  <div className="model-table-wrap" key={ti}>
+                    <table className="model-table">
+                      <thead>
+                        <tr>
+                          {table.headers.map((h, hi) => (
+                            <th key={hi}>{h.replace(/\*\*/g, "")}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {table.rows.map((row, ri) => (
+                          <tr key={ri} className={rowClass(row)}>
+                            {row.map((cell, ci) => {
+                              const { text, numeric } = displayCell(cell);
+                              return (
+                                <td key={ci} className={numeric ? "cell-num" : ""}>{text}</td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
         </div>
       </div>
 
@@ -635,7 +726,7 @@ export default function Home() {
         <div className="modal-overlay" onClick={() => setModal(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <span>Edit Assumptions</span>
+              <span>Edit assumptions</span>
               <button className="modal-close" onClick={() => setModal(null)}>×</button>
             </div>
             <div className="modal-body">
