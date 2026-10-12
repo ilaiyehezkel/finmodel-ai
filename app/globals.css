@@ -861,3 +861,102 @@ button, select, input, textarea {
   font-weight: 600;
 }
 .modal-btn--go:hover { opacity: 0.85; }
+
+/* ── Chat note under a DCF interpretation ───────────────────────── */
+
+.chat-model-note {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* ── Interactive DCF panel ──────────────────────────────────────── */
+
+.dcf-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.dcf-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dcf-section-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.dcf-assumptions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  background: var(--panel-2);
+}
+
+.dcf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dcf-field--wide { grid-column: 1 / -1; }
+
+.dcf-field span {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.dcf-input {
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: right;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  width: 100%;
+  transition: border-color 0.1s;
+}
+.dcf-input:focus { outline: none; border-color: var(--accent); }
+
+.dcf-input-text {
+  font-family: var(--sans);
+  text-align: left;
+}
+
+.dcf-input--cell {
+  padding: 3px 5px;
+  font-size: 12.5px;
+  min-width: 56px;
+}
+
+.model-table td.dcf-cell-editable { padding: 4px 6px; }
+
+.dcf-price-highlight {
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.dcf-error {
+  color: var(--red);
+  font-family: var(--sans);
+  white-space: normal;
+}
+
+.dcf-note {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+@media (max-width: 600px) {
+  .dcf-assumptions-grid { grid-template-columns: 1fr; }
+}
