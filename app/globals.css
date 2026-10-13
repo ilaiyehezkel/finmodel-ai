@@ -957,6 +957,21 @@ button, select, input, textarea {
   line-height: 1.5;
 }
 
+.dcf-round-block {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border);
+}
+.dcf-round-block:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.dcf-block-actions {
+  margin-top: 8px;
+}
+
 @media (max-width: 600px) {
   .dcf-assumptions-grid { grid-template-columns: 1fr; }
 }

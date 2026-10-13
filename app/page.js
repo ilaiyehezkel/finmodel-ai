@@ -5,7 +5,9 @@ import { formatMessage } from "../lib/format";
 import * as XLSXStyle from "xlsx-js-style";
 import { computeDCF, computeSensitivity as computeDCFSensitivity } from "../lib/dcf";
 import { computeLBO, computeSensitivity as computeLBOSensitivity } from "../lib/lbo";
-import { buildDCFWorkbook, buildLBOWorkbook } from "../lib/excelExport";
+import { computeUnitEconomics, computeSensitivity as computeUESensitivity } from "../lib/unitEconomics";
+import { computeCapTable, computePayoutTable } from "../lib/capTable";
+import { buildDCFWorkbook, buildLBOWorkbook, buildUnitEconomicsWorkbook, buildCapTableWorkbook } from "../lib/excelExport";
 
 // ── Templates ───────────────────────────────────────────────────
 
@@ -73,6 +75,10 @@ Produce a linked Income Statement, Balance Sheet, and Cash Flow Statement for 3 
 Apply: (1) Scorecard method, (2) Berkus method, (3) First Chicago method with 3 scenarios, (4) VC method at 10x target return / 5-yr exit. Recommend a valuation range.`,
   },
 ];
+
+// Model kinds computed deterministically server-side (lib/*.js) rather than
+// rendered from markdown tables.
+const STRUCTURED_KINDS = ["dcf", "lbo", "unitEconomics", "capTable"];
 
 // ── Suggestions ─────────────────────────────────────────────────
 
@@ -563,6 +569,110 @@ function exportLBOToExcel(assumptions, sensitivity) {
   XLSXStyle.writeFile(wb, `FinModel_LBO_${assumptions.companyName.replace(/\s+/g, "_")}.xlsx`);
 }
 
+// ── Unit Economics interactive panel helpers ────────────────────
+
+function fieldsFromUEAssumptions(a) {
+  return {
+    companyName: a.companyName,
+    arpu: String(a.arpu),
+    grossMargin: (a.grossMargin * 100).toString(),
+    monthlyChurn: (a.monthlyChurn * 100).toString(),
+    cac: String(a.cac),
+    monthlyDiscountRate: (a.monthlyDiscountRate * 100).toString(),
+    projectionMonths: String(a.projectionMonths),
+    notes: a.notes || "",
+  };
+}
+
+function assumptionsFromUEFields(f) {
+  const n = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : 0; };
+  return {
+    companyName: f.companyName || "Company",
+    arpu: n(f.arpu),
+    grossMargin: n(f.grossMargin) / 100,
+    monthlyChurn: Math.max(0, n(f.monthlyChurn) / 100),
+    cac: n(f.cac),
+    monthlyDiscountRate: n(f.monthlyDiscountRate) / 100,
+    projectionMonths: Math.max(1, Math.min(120, Math.round(n(f.projectionMonths)) || 36)),
+    notes: f.notes || "",
+  };
+}
+
+function ueSummaryText(a, computed) {
+  const lines = [
+    `${a.companyName} — Unit Economics`,
+    `Gross profit/customer/mo: ${formatMoney(computed.grossProfitPerMonth)}`,
+    `LTV: ${formatMoney(computed.simpleLTV)}  |  LTV/CAC: ${formatMultiple(computed.ltvToCac)}`,
+    computed.cacPaybackMonths !== null
+      ? `CAC payback: ${computed.cacPaybackMonths.toFixed(1)} months`
+      : `CAC payback: not reached within ${a.projectionMonths} months`,
+  ];
+  return lines.join("\n");
+}
+
+function exportUEToExcel(assumptions, sensitivity) {
+  const { wb } = buildUnitEconomicsWorkbook(assumptions, sensitivity);
+  XLSXStyle.writeFile(wb, `FinModel_UnitEconomics_${assumptions.companyName.replace(/\s+/g, "_")}.xlsx`);
+}
+
+// ── Cap Table interactive panel helpers ─────────────────────────
+
+function fieldsFromCapTableAssumptions(a) {
+  return {
+    companyName: a.companyName,
+    founders: a.founders.map((f) => ({ name: f.name, shares: String(f.shares) })),
+    optionPoolShares: String(a.optionPoolShares),
+    rounds: a.rounds.map((r) => ({
+      name: r.name,
+      preMoney: String(r.preMoney),
+      investment: String(r.investment),
+      targetOptionPoolPct: (r.targetOptionPoolPct * 100).toString(),
+      liquidationPreference: String(r.liquidationPreference),
+    })),
+    safes: a.safes.map((s) => ({
+      name: s.name,
+      amount: String(s.amount),
+      cap: String(s.cap),
+      discount: (s.discount * 100).toString(),
+    })),
+  };
+}
+
+function assumptionsFromCapTableFields(f) {
+  const n = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : 0; };
+  return {
+    companyName: f.companyName || "Company",
+    founders: f.founders.map((fd) => ({ name: fd.name || "Founder", shares: n(fd.shares) })),
+    optionPoolShares: n(f.optionPoolShares),
+    rounds: f.rounds.map((r) => ({
+      name: r.name || "Round",
+      preMoney: n(r.preMoney),
+      investment: n(r.investment),
+      targetOptionPoolPct: n(r.targetOptionPoolPct) / 100,
+      liquidationPreference: n(r.liquidationPreference),
+    })),
+    safes: f.safes.map((s) => ({
+      name: s.name || "SAFE",
+      amount: n(s.amount),
+      cap: n(s.cap) || 1e12,
+      discount: n(s.discount) / 100,
+    })),
+  };
+}
+
+function capTableSummaryText(a, computed) {
+  const lines = [`${a.companyName} — Cap Table`];
+  computed.finalOwnership.forEach((h) => {
+    lines.push(`${h.name}: ${formatPct(h.pct)}`);
+  });
+  return lines.join("\n");
+}
+
+function exportCapTableToExcel(assumptions, computed, payoutTable) {
+  const { wb } = buildCapTableWorkbook(assumptions, computed, payoutTable);
+  XLSXStyle.writeFile(wb, `FinModel_CapTable_${assumptions.companyName.replace(/\s+/g, "_")}.xlsx`);
+}
+
 // ── Main Component ──────────────────────────────────────────────
 
 export default function Home() {
@@ -580,12 +690,18 @@ export default function Home() {
   const [dcfMsgIdx, setDcfMsgIdx] = useState(null);
   const [lboFields, setLboFields] = useState(null);
   const [lboMsgIdx, setLboMsgIdx] = useState(null);
+  const [ueFields, setUeFields] = useState(null);
+  const [ueMsgIdx, setUeMsgIdx] = useState(null);
+  const [capFields, setCapFields] = useState(null);
+  const [capMsgIdx, setCapMsgIdx] = useState(null);
 
   const bottomRef = useRef(null);
   const msgRefs = useRef({});
   const textareaRef = useRef(null);
   const dcfPanelRef = useRef(null);
   const lboPanelRef = useRef(null);
+  const uePanelRef = useRef(null);
+  const capPanelRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -613,6 +729,14 @@ export default function Home() {
       latestModel = { type: "lbo", idx: i, assumptions: m.assumptions, modelType: "LBO Model" };
       break;
     }
+    if (m.kind === "unitEconomics") {
+      latestModel = { type: "unitEconomics", idx: i, assumptions: m.assumptions, modelType: "Unit Economics" };
+      break;
+    }
+    if (m.kind === "capTable") {
+      latestModel = { type: "capTable", idx: i, assumptions: m.assumptions, modelType: "Cap Table" };
+      break;
+    }
     const tables = parseMarkdownTables(m.content);
     if (tables.length) {
       latestModel = { type: "table", idx: i, content: m.content, tables, modelType: detectModelType(m.content) };
@@ -628,6 +752,14 @@ export default function Home() {
     if (latestModel?.type === "lbo" && latestModel.idx !== lboMsgIdx) {
       setLboFields(fieldsFromLBOAssumptions(latestModel.assumptions));
       setLboMsgIdx(latestModel.idx);
+    }
+    if (latestModel?.type === "unitEconomics" && latestModel.idx !== ueMsgIdx) {
+      setUeFields(fieldsFromUEAssumptions(latestModel.assumptions));
+      setUeMsgIdx(latestModel.idx);
+    }
+    if (latestModel?.type === "capTable" && latestModel.idx !== capMsgIdx) {
+      setCapFields(fieldsFromCapTableAssumptions(latestModel.assumptions));
+      setCapMsgIdx(latestModel.idx);
     }
   }, [latestModel?.idx, latestModel?.type]);
 
@@ -661,6 +793,64 @@ export default function Home() {
     });
   };
 
+  const liveUeAssumptions = ueFields ? assumptionsFromUEFields(ueFields) : null;
+  const liveUeComputed = liveUeAssumptions ? computeUnitEconomics(liveUeAssumptions) : null;
+  const liveUeSensitivity = liveUeAssumptions ? computeUESensitivity(liveUeAssumptions) : null;
+
+  const updateUeField = (key, value) => {
+    setUeFields((f) => ({ ...f, [key]: value }));
+  };
+
+  const liveCapAssumptions = capFields ? assumptionsFromCapTableFields(capFields) : null;
+  const liveCapComputed = liveCapAssumptions ? computeCapTable(liveCapAssumptions) : null;
+  const liveCapPayoutTable = liveCapComputed ? computePayoutTable(liveCapComputed) : null;
+
+  const updateCapField = (key, value) => {
+    setCapFields((f) => ({ ...f, [key]: value }));
+  };
+  const updateFounder = (index, key, value) => {
+    setCapFields((f) => {
+      const founders = f.founders.map((fd, i) => (i === index ? { ...fd, [key]: value } : fd));
+      return { ...f, founders };
+    });
+  };
+  const addFounder = () => {
+    setCapFields((f) => ({ ...f, founders: [...f.founders, { name: `Founder ${f.founders.length + 1}`, shares: "0" }] }));
+  };
+  const removeFounder = (index) => {
+    setCapFields((f) => ({ ...f, founders: f.founders.filter((_, i) => i !== index) }));
+  };
+  const updateRound = (index, key, value) => {
+    setCapFields((f) => {
+      const rounds = f.rounds.map((r, i) => (i === index ? { ...r, [key]: value } : r));
+      return { ...f, rounds };
+    });
+  };
+  const addRound = () => {
+    setCapFields((f) => ({
+      ...f,
+      rounds: [...f.rounds, {
+        name: `Round ${f.rounds.length + 1}`, preMoney: "10000000", investment: "2000000",
+        targetOptionPoolPct: "0", liquidationPreference: "1",
+      }],
+    }));
+  };
+  const removeRound = (index) => {
+    setCapFields((f) => ({ ...f, rounds: f.rounds.filter((_, i) => i !== index) }));
+  };
+  const updateSafe = (index, key, value) => {
+    setCapFields((f) => {
+      const safes = f.safes.map((s, i) => (i === index ? { ...s, [key]: value } : s));
+      return { ...f, safes };
+    });
+  };
+  const addSafe = () => {
+    setCapFields((f) => ({ ...f, safes: [...f.safes, { name: `SAFE ${f.safes.length + 1}`, amount: "500000", cap: "5000000", discount: "20" }] }));
+  };
+  const removeSafe = (index) => {
+    setCapFields((f) => ({ ...f, safes: f.safes.filter((_, i) => i !== index) }));
+  };
+
   const sendMessage = async (text) => {
     const userMsg = text !== undefined ? text : input.trim();
     if (!userMsg || loading) return;
@@ -681,7 +871,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
-      if (data.kind === "dcf" || data.kind === "lbo") {
+      if (STRUCTURED_KINDS.includes(data.kind)) {
         setMessages([...next, {
           role: "assistant",
           kind: data.kind,
@@ -835,7 +1025,7 @@ export default function Home() {
                           className="message-content"
                           dangerouslySetInnerHTML={{ __html: formatMessage(displayText) }}
                         />
-                        {(m.kind === "dcf" || m.kind === "lbo") && (
+                        {STRUCTURED_KINDS.includes(m.kind) && (
                           <p className="chat-model-note">The full interactive model is in the Model panel →</p>
                         )}
                         {m.role === "assistant" && (
@@ -943,6 +1133,30 @@ export default function Home() {
                   </button>
                   <button className="panel-btn" onClick={() => exportLBOToExcel(liveLboAssumptions, liveLboSensitivity)}>Excel</button>
                   <button className="panel-btn" onClick={() => exportToPDF(lboPanelRef.current?.innerHTML || "")}>PDF</button>
+                </div>
+              )}
+              {latestModel?.type === "unitEconomics" && liveUeComputed && (
+                <div className="model-panel-actions">
+                  <button
+                    className="panel-btn"
+                    onClick={() => copyMsg(ueSummaryText(liveUeAssumptions, liveUeComputed), latestModel.idx)}
+                  >
+                    {copiedIdx === latestModel.idx ? "Copied" : "Copy"}
+                  </button>
+                  <button className="panel-btn" onClick={() => exportUEToExcel(liveUeAssumptions, liveUeSensitivity)}>Excel</button>
+                  <button className="panel-btn" onClick={() => exportToPDF(uePanelRef.current?.innerHTML || "")}>PDF</button>
+                </div>
+              )}
+              {latestModel?.type === "capTable" && liveCapComputed && (
+                <div className="model-panel-actions">
+                  <button
+                    className="panel-btn"
+                    onClick={() => copyMsg(capTableSummaryText(liveCapAssumptions, liveCapComputed), latestModel.idx)}
+                  >
+                    {copiedIdx === latestModel.idx ? "Copied" : "Copy"}
+                  </button>
+                  <button className="panel-btn" onClick={() => exportCapTableToExcel(liveCapAssumptions, liveCapComputed, liveCapPayoutTable)}>Excel</button>
+                  <button className="panel-btn" onClick={() => exportToPDF(capPanelRef.current?.innerHTML || "")}>PDF</button>
                 </div>
               )}
             </div>
@@ -1441,6 +1655,326 @@ export default function Home() {
 
                   <p className="dcf-note">
                     Assumptions were generated by AI and should be checked — the math above is calculated deterministically, not by the AI.
+                  </p>
+                </div>
+              )}
+
+              {latestModel?.type === "unitEconomics" && ueFields && liveUeComputed && (
+                <div className="dcf-panel" ref={uePanelRef}>
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Assumptions</div>
+                    <div className="dcf-assumptions-grid">
+                      <label className="dcf-field dcf-field--wide">
+                        <span>Company name</span>
+                        <input
+                          className="dcf-input dcf-input-text"
+                          value={ueFields.companyName}
+                          onChange={(e) => updateUeField("companyName", e.target.value)}
+                        />
+                      </label>
+                      {[
+                        ["arpu", "ARPU, monthly ($)"],
+                        ["grossMargin", "Gross margin (%)"],
+                        ["monthlyChurn", "Monthly churn (%)"],
+                        ["cac", "CAC ($)"],
+                        ["monthlyDiscountRate", "Monthly discount rate (%)"],
+                        ["projectionMonths", "Projection months"],
+                      ].map(([key, label]) => (
+                        <label className="dcf-field" key={key}>
+                          <span>{label}</span>
+                          <input
+                            className="dcf-input"
+                            value={ueFields[key]}
+                            onChange={(e) => updateUeField(key, e.target.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    {ueFields.notes && <p className="dcf-note">AI note: {ueFields.notes}</p>}
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Summary</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <tbody>
+                          <tr>
+                            <td>Gross profit / customer / month</td>
+                            <td className="cell-num">{formatMoney(liveUeComputed.grossProfitPerMonth)}</td>
+                          </tr>
+                          <tr>
+                            <td>Average customer lifetime</td>
+                            <td className="cell-num">
+                              {liveUeComputed.avgLifetimeMonths !== null ? `${liveUeComputed.avgLifetimeMonths.toFixed(1)} mo` : "n/a"}
+                            </td>
+                          </tr>
+                          <tr className="row-section">
+                            <td>Simple LTV</td>
+                            <td className="cell-num">{formatMoney(liveUeComputed.simpleLTV)}</td>
+                          </tr>
+                          <tr>
+                            <td>Discounted LTV</td>
+                            <td className="cell-num">{formatMoney(liveUeComputed.discountedLTV)}</td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>LTV / CAC</td>
+                            <td className="cell-num dcf-price-highlight">
+                              {liveUeComputed.ltvToCac !== null ? formatMultiple(liveUeComputed.ltvToCac) : <span className="dcf-error">n/a</span>}
+                            </td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>CAC payback</td>
+                            <td className="cell-num dcf-price-highlight">
+                              {liveUeComputed.cacPaybackMonths !== null
+                                ? `${liveUeComputed.cacPaybackMonths.toFixed(1)} mo`
+                                : <span className="dcf-error">not reached</span>}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Monthly cohort (single customer)</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead>
+                          <tr>
+                            <th></th>
+                            {liveUeComputed.months.map((m) => <th key={m.month}>M{m.month}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>Survival</td>
+                            {liveUeComputed.months.map((m) => <td key={m.month} className="cell-num">{formatPct(m.survival, 1)}</td>)}
+                          </tr>
+                          <tr className="row-section">
+                            <td>Expected gross profit</td>
+                            {liveUeComputed.months.map((m) => <td key={m.month} className="cell-num">{formatMoney(m.expectedGrossProfit)}</td>)}
+                          </tr>
+                          <tr className="row-total">
+                            <td>Cumulative gross profit</td>
+                            {liveUeComputed.months.map((m) => <td key={m.month} className="cell-num">{formatMoney(m.cumulativeGrossProfit)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Payback reached</td>
+                            {liveUeComputed.months.map((m) => <td key={m.month} className="cell-num">{m.paybackReached ? "Yes" : ""}</td>)}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Sensitivity — LTV / CAC</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead>
+                          <tr>
+                            <th>Churn ↓ / CAC →</th>
+                            {liveUeSensitivity.cacSteps.map((c, ci) => <th key={ci}>{formatMoney(c)}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {liveUeSensitivity.grid.map((row, ri) => (
+                            <tr key={ri}>
+                              <td>{formatPct(liveUeSensitivity.churnSteps[ri])}</td>
+                              {row.map((cell, ci) => (
+                                <td key={ci} className="cell-num">
+                                  {cell.error ? <span className="dcf-error">n/a</span> : formatMultiple(cell.ltvToCac)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="dcf-note">
+                    Assumptions were generated by AI and should be checked — the math above is calculated deterministically, not by the AI.
+                  </p>
+                </div>
+              )}
+
+              {latestModel?.type === "capTable" && capFields && liveCapComputed && liveCapPayoutTable && (
+                <div className="dcf-panel" ref={capPanelRef}>
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Company</div>
+                    <div className="dcf-assumptions-grid">
+                      <label className="dcf-field dcf-field--wide">
+                        <span>Company name</span>
+                        <input
+                          className="dcf-input dcf-input-text"
+                          value={capFields.companyName}
+                          onChange={(e) => updateCapField("companyName", e.target.value)}
+                        />
+                      </label>
+                      <label className="dcf-field">
+                        <span>Existing option pool shares</span>
+                        <input
+                          className="dcf-input"
+                          value={capFields.optionPoolShares}
+                          onChange={(e) => updateCapField("optionPoolShares", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Founders</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead><tr><th>Name</th><th>Shares</th><th></th></tr></thead>
+                        <tbody>
+                          {capFields.founders.map((f, i) => (
+                            <tr key={i}>
+                              <td className="dcf-cell-editable">
+                                <input
+                                  className="dcf-input dcf-input-text dcf-input--cell"
+                                  value={f.name}
+                                  onChange={(e) => updateFounder(i, "name", e.target.value)}
+                                />
+                              </td>
+                              <td className="cell-num dcf-cell-editable">
+                                <input
+                                  className="dcf-input dcf-input--cell"
+                                  value={f.shares}
+                                  onChange={(e) => updateFounder(i, "shares", e.target.value)}
+                                />
+                              </td>
+                              <td><button className="panel-btn" onClick={() => removeFounder(i)}>Remove</button></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="dcf-block-actions">
+                      <button className="panel-btn" onClick={addFounder}>+ Add founder</button>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Rounds</div>
+                    {capFields.rounds.map((r, i) => (
+                      <div className="dcf-round-block" key={i}>
+                        <div className="dcf-assumptions-grid">
+                          <label className="dcf-field dcf-field--wide">
+                            <span>Round name</span>
+                            <input className="dcf-input dcf-input-text" value={r.name} onChange={(e) => updateRound(i, "name", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Pre-money ($)</span>
+                            <input className="dcf-input" value={r.preMoney} onChange={(e) => updateRound(i, "preMoney", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Investment ($)</span>
+                            <input className="dcf-input" value={r.investment} onChange={(e) => updateRound(i, "investment", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Target option pool (%)</span>
+                            <input className="dcf-input" value={r.targetOptionPoolPct} onChange={(e) => updateRound(i, "targetOptionPoolPct", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Liquidation pref (x)</span>
+                            <input className="dcf-input" value={r.liquidationPreference} onChange={(e) => updateRound(i, "liquidationPreference", e.target.value)} />
+                          </label>
+                        </div>
+                        <div className="dcf-block-actions">
+                          <button className="panel-btn" onClick={() => removeRound(i)}>Remove round</button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="dcf-block-actions">
+                      <button className="panel-btn panel-btn--primary" onClick={addRound}>+ Add round</button>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">SAFEs (convert in the first priced round)</div>
+                    {capFields.safes.map((s, i) => (
+                      <div className="dcf-round-block" key={i}>
+                        <div className="dcf-assumptions-grid">
+                          <label className="dcf-field dcf-field--wide">
+                            <span>SAFE name</span>
+                            <input className="dcf-input dcf-input-text" value={s.name} onChange={(e) => updateSafe(i, "name", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Amount ($)</span>
+                            <input className="dcf-input" value={s.amount} onChange={(e) => updateSafe(i, "amount", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Valuation cap ($)</span>
+                            <input className="dcf-input" value={s.cap} onChange={(e) => updateSafe(i, "cap", e.target.value)} />
+                          </label>
+                          <label className="dcf-field">
+                            <span>Discount (%)</span>
+                            <input className="dcf-input" value={s.discount} onChange={(e) => updateSafe(i, "discount", e.target.value)} />
+                          </label>
+                        </div>
+                        <div className="dcf-block-actions">
+                          <button className="panel-btn" onClick={() => removeSafe(i)}>Remove SAFE</button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="dcf-block-actions">
+                      <button className="panel-btn" onClick={addSafe}>+ Add SAFE</button>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Final cap table</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead><tr><th>Holder</th><th>Shares</th><th>Ownership %</th></tr></thead>
+                        <tbody>
+                          {liveCapComputed.finalOwnership.map((holder, hi) => (
+                            <tr key={hi} className={holder.type === "founder" || holder.type === "pool" ? "row-section" : ""}>
+                              <td>{holder.name}</td>
+                              <td className="cell-num">{Math.round(holder.shares).toLocaleString("en-US")}</td>
+                              <td className="cell-num">{formatPct(holder.pct)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Exit payout table</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead>
+                          <tr>
+                            <th>Holder</th>
+                            {liveCapPayoutTable.columns.map((col, ci) => <th key={ci}>{col.multiple}x</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {liveCapComputed.holders.map((holder, hi) => (
+                            <tr key={hi}>
+                              <td>{holder.name}</td>
+                              {liveCapPayoutTable.columns.map((col, ci) => {
+                                const p = col.payouts.find((x) => x.name === holder.name);
+                                return <td key={ci} className="cell-num">{formatMoney(p ? p.payout : 0)}</td>;
+                              })}
+                            </tr>
+                          ))}
+                          <tr className="row-total">
+                            <td>Exit value</td>
+                            {liveCapPayoutTable.columns.map((col, ci) => <td key={ci} className="cell-num">{formatMoney(col.exitValue)}</td>)}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="dcf-note">
+                    Assumptions were generated by AI and should be checked — the math above is calculated deterministically, not by the AI.
+                    Round pricing and exit payouts use an iterative solver, since the option pool shuffle, SAFE conversion, and the
+                    convert-vs-preference decision all depend on each other.
                   </p>
                 </div>
               )}
