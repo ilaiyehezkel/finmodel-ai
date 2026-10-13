@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { validateAssumptions, computeDCF } from "../../../lib/dcf";
+import { validateAssumptions as validateLBOAssumptions, computeLBO } from "../../../lib/lbo";
 
 const SYSTEM_PROMPT = `You are a world-class financial analyst and modeling expert. You specialize in:
 
@@ -58,6 +59,38 @@ Use ONLY the numbers provided to you. Do not recalculate, round differently, est
 const INTERP_SYSTEM_PROMPT_SIMPLE = INTERP_SYSTEM_PROMPT +
   "\n\nIMPORTANT: Explain it in simple terms a teenager could understand. Avoid financial jargon, use a relatable analogy, and keep it conversational.";
 
+// Used only for LBO requests. Claude extracts raw assumptions from the
+// conversation — it never calculates anything; lib/lbo.js does all the math.
+const LBO_ASSUMPTIONS_PROMPT = `You are a financial data extraction engine. Read the user's request and return ONLY a single raw JSON object (no markdown, no code fences, no commentary, no explanation) with exactly these fields:
+
+{
+  "companyName": string,
+  "entryRevenue": number,          // most recent full-year revenue in dollars, at entry
+  "revenueGrowth": [number, number, number, number, number], // YoY growth rate for each of the next 5 years, as decimals (0.05 means 5%)
+  "ebitdaMargin": number,          // stabilized EBITDA margin, decimal
+  "daPct": number,                 // D&A as a % of revenue, decimal
+  "capexPct": number,              // CapEx as a % of revenue, decimal
+  "nwcPct": number,                // change in net working capital as a % of revenue, decimal
+  "taxRate": number,               // decimal
+  "entryMultiple": number,         // entry EV / EBITDA multiple
+  "exitMultiple": number,          // exit EV / EBITDA multiple
+  "holdingPeriod": number,         // years, 1-5, default 5 if not specified
+  "feePct": number,                // transaction fees as a % of enterprise value, decimal
+  "minCash": number,               // minimum cash balance held on the balance sheet, dollars
+  "seniorDebt": { "multiple": number, "rate": number, "amortPct": number }, // x EBITDA, interest rate decimal, mandatory annual amortization % of original principal (decimal)
+  "subDebt": { "multiple": number, "rate": number },  // x EBITDA, interest rate decimal — no amortization, bullet at exit
+  "sweepPct": number               // % of excess free cash flow swept to pay down senior debt, decimal
+}
+
+Do not perform any calculations and do not include any derived figures — no sources & uses, debt schedule, free cash flow, enterprise value, MOIC, or IRR. Only the raw input assumptions above, inferred or reasonably estimated from the user's request. If the user didn't specify a value, make a sensible estimate rather than omitting the field.`;
+
+const LBO_INTERP_SYSTEM_PROMPT = `You are a financial analyst writing the interpretation section of an LBO model that has already been fully calculated by deterministic code. You will be given the exact computed outputs (sources & uses, exit valuation, MOIC, and IRR). Write a short interpretation — 2 to 4 sentences — of what these results mean for the deal.
+
+Use ONLY the numbers provided to you. Do not recalculate, round differently, estimate, or invent any figure that isn't given to you. Do not restate the raw assumptions. Be direct, with no fluff or disclaimers.`;
+
+const LBO_INTERP_SYSTEM_PROMPT_SIMPLE = LBO_INTERP_SYSTEM_PROMPT +
+  "\n\nIMPORTANT: Explain it in simple terms a teenager could understand. Avoid financial jargon, use a relatable analogy, and keep it conversational.";
+
 async function callClaude(system, messages, maxTokens) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -86,6 +119,12 @@ function isDCFRequest(messages) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const t = (lastUser?.content || "").toLowerCase();
   return /\bdcf\b/.test(t) || t.includes("discounted cash flow");
+}
+
+function isLBORequest(messages) {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const t = (lastUser?.content || "").toLowerCase();
+  return /\blbo\b/.test(t) || t.includes("leveraged buyout");
 }
 
 function extractJSON(text) {
@@ -124,6 +163,30 @@ function round2(n) {
   return typeof n === "number" ? Math.round(n * 100) / 100 : n;
 }
 
+// Small, focused summary so the interpretation prompt only ever sees the
+// final calculated LBO outputs — never the raw assumptions it could "recompute".
+function summarizeLBOForInterpretation(assumptions, computed) {
+  const exitYear = computed.years[assumptions.holdingPeriod - 1];
+  return {
+    companyName: assumptions.companyName,
+    holdingPeriodYears: assumptions.holdingPeriod,
+    entryEnterpriseValue: round2(computed.sourcesUses.entryEV),
+    sponsorEquityAtEntry: round2(computed.sourcesUses.sponsorEquity),
+    seniorDebtAtEntry: round2(computed.sourcesUses.seniorDebt),
+    subDebtAtEntry: round2(computed.sourcesUses.subDebt),
+    exitEbitda: round2(exitYear.ebitda),
+    exitEnterpriseValue: round2(computed.exit.exitEV),
+    exitNetDebt: round2(computed.exit.exitNetDebt),
+    exitEquityValue: round2(computed.exit.exitEquityValue),
+    sponsorProceeds: round2(computed.exit.sponsorProceeds),
+    moic: computed.valid ? round2(computed.returns.moic) : null,
+    irrPct: computed.valid ? round2(computed.returns.irr * 100) : null,
+    dealNote: computed.valid
+      ? null
+      : "Sponsor equity was zero or negative at entry (the debt tranches plus fees exceeded the purchase price), so this capital structure doesn't work as specified.",
+  };
+}
+
 export async function POST(req) {
   try {
     const { messages, simpleMode } = await req.json();
@@ -156,6 +219,32 @@ export async function POST(req) {
 
       return NextResponse.json({
         kind: "dcf",
+        assumptions,
+        interpretation: interpretation.trim() || "Model calculated — see the panel for the full breakdown.",
+      });
+    }
+
+    if (isLBORequest(messages)) {
+      // 1. Claude extracts raw assumptions only — no math.
+      const assumptionsText = await callClaude(LBO_ASSUMPTIONS_PROMPT, messages, 800);
+      const assumptions = validateLBOAssumptions(extractJSON(assumptionsText));
+
+      // 2. lib/lbo.js performs every calculation deterministically.
+      const computed = computeLBO(assumptions);
+
+      // 3. Claude writes a short interpretation of the computed numbers only.
+      const summary = summarizeLBOForInterpretation(assumptions, computed);
+      const interpretation = await callClaude(
+        simpleMode ? LBO_INTERP_SYSTEM_PROMPT_SIMPLE : LBO_INTERP_SYSTEM_PROMPT,
+        [{
+          role: "user",
+          content: `Here are the fully calculated LBO outputs. Write the interpretation using only these numbers:\n\n${JSON.stringify(summary, null, 2)}`,
+        }],
+        400
+      );
+
+      return NextResponse.json({
+        kind: "lbo",
         assumptions,
         interpretation: interpretation.trim() || "Model calculated — see the panel for the full breakdown.",
       });

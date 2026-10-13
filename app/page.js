@@ -3,7 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 import { formatMessage } from "../lib/format";
 import * as XLSXStyle from "xlsx-js-style";
-import { computeDCF, computeSensitivity } from "../lib/dcf";
+import { computeDCF, computeSensitivity as computeDCFSensitivity } from "../lib/dcf";
+import { computeLBO, computeSensitivity as computeLBOSensitivity } from "../lib/lbo";
+import { buildDCFWorkbook, buildLBOWorkbook } from "../lib/excelExport";
 
 // ── Templates ───────────────────────────────────────────────────
 
@@ -414,6 +416,11 @@ function formatPct(n, decimals = 1) {
   return (n * 100).toFixed(decimals) + "%";
 }
 
+function formatMultiple(n, decimals = 2) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  return n.toFixed(decimals) + "x";
+}
+
 // Converts canonical numeric assumptions (decimals/dollars) into the raw
 // strings the editable inputs display and edit.
 function fieldsFromAssumptions(a) {
@@ -469,187 +476,91 @@ function dcfSummaryText(a, computed) {
   return lines.join("\n");
 }
 
-// Builds a DCF workbook with real Excel formulas — every line item below the
-// hard-coded (teal) assumption cells is a live formula, so editing an
-// assumption in Excel recalculates the entire model.
 function exportDCFToExcel(assumptions, sensitivity) {
-  const a = assumptions;
-  const wb = XLSXStyle.utils.book_new();
-  const ws = {};
-  ws["!merges"] = [];
-  const col = (c) => XLSXStyle.utils.encode_col(c);
-  const abs = (c, r) => `$${col(c)}$${r + 1}`;
-  const rel = (c, r) => `${col(c)}${r + 1}`;
-  const colMax = [28, 14, 14, 14, 14, 14];
+  const { wb } = buildDCFWorkbook(assumptions, sensitivity);
+  XLSXStyle.writeFile(wb, `FinModel_DCF_${assumptions.companyName.replace(/\s+/g, "_")}.xlsx`);
+}
 
-  function setCell(r, c, cell) {
-    ws[XLSXStyle.utils.encode_cell({ r, c })] = cell;
+// ── LBO interactive panel helpers ───────────────────────────────
+
+// Converts canonical numeric LBO assumptions (decimals/dollars, nested debt
+// tranches) into the raw strings the editable inputs display and edit.
+function fieldsFromLBOAssumptions(a) {
+  return {
+    companyName: a.companyName,
+    entryRevenue: String(a.entryRevenue),
+    growth: a.revenueGrowth.map((g) => (g * 100).toString()),
+    ebitdaMargin: (a.ebitdaMargin * 100).toString(),
+    daPct: (a.daPct * 100).toString(),
+    capexPct: (a.capexPct * 100).toString(),
+    nwcPct: (a.nwcPct * 100).toString(),
+    taxRate: (a.taxRate * 100).toString(),
+    entryMultiple: String(a.entryMultiple),
+    exitMultiple: String(a.exitMultiple),
+    holdingPeriod: String(a.holdingPeriod),
+    feePct: (a.feePct * 100).toString(),
+    minCash: String(a.minCash),
+    seniorMultiple: String(a.seniorDebt.multiple),
+    seniorRate: (a.seniorDebt.rate * 100).toString(),
+    seniorAmortPct: (a.seniorDebt.amortPct * 100).toString(),
+    subMultiple: String(a.subDebt.multiple),
+    subRate: (a.subDebt.rate * 100).toString(),
+    sweepPct: (a.sweepPct * 100).toString(),
+  };
+}
+
+// Converts the editable field strings back into canonical numeric LBO
+// assumptions for lib/lbo.js. Unparseable input falls back to 0 rather than crashing.
+function assumptionsFromLBOFields(f) {
+  const n = (s) => {
+    const v = parseFloat(s);
+    return Number.isFinite(v) ? v : 0;
+  };
+  const hp = Math.round(n(f.holdingPeriod)) || 5;
+  return {
+    companyName: f.companyName || "Company",
+    entryRevenue: n(f.entryRevenue),
+    revenueGrowth: f.growth.map((g) => n(g) / 100),
+    ebitdaMargin: n(f.ebitdaMargin) / 100,
+    daPct: n(f.daPct) / 100,
+    capexPct: n(f.capexPct) / 100,
+    nwcPct: n(f.nwcPct) / 100,
+    taxRate: n(f.taxRate) / 100,
+    entryMultiple: n(f.entryMultiple),
+    exitMultiple: n(f.exitMultiple),
+    holdingPeriod: Math.min(5, Math.max(1, hp)),
+    feePct: n(f.feePct) / 100,
+    minCash: n(f.minCash),
+    seniorDebt: {
+      multiple: n(f.seniorMultiple),
+      rate: n(f.seniorRate) / 100,
+      amortPct: n(f.seniorAmortPct) / 100,
+    },
+    subDebt: {
+      multiple: n(f.subMultiple),
+      rate: n(f.subRate) / 100,
+    },
+    sweepPct: n(f.sweepPct) / 100,
+  };
+}
+
+function lboSummaryText(a, computed) {
+  const lines = [
+    `${a.companyName} — LBO Model`,
+    `Entry EV: ${formatMoney(computed.sourcesUses.entryEV)}  |  Sponsor equity: ${formatMoney(computed.sourcesUses.sponsorEquity)}`,
+    `Exit equity value (Year ${a.holdingPeriod}): ${formatMoney(computed.exit.exitEquityValue)}`,
+  ];
+  if (computed.valid) {
+    lines.push(`MOIC: ${computed.returns.moic.toFixed(2)}x  |  IRR: ${formatPct(computed.returns.irr)}`);
+  } else {
+    lines.push("(Sponsor equity is zero or negative — this capital structure doesn't work as specified.)");
   }
+  return lines.join("\n");
+}
 
-  const inputStyle = (numFmt) => ({
-    fill: { fgColor: { rgb: CLR.tealSoft } },
-    font: { bold: true, sz: 10, color: { rgb: CLR.tealDark } },
-    alignment: { horizontal: "right", vertical: "center" },
-    ...(numFmt ? { z: numFmt } : {}),
-  });
-  const labelStyle = (bold) => ({
-    font: { bold: !!bold, sz: 10, color: { rgb: CLR.dark } },
-    alignment: { horizontal: "left", vertical: "center" },
-  });
-  const formulaStyle = (bold, numFmt, totalBorder) => ({
-    font: { bold: !!bold, sz: 10, color: { rgb: CLR.dark } },
-    alignment: { horizontal: "right", vertical: "center" },
-    ...(numFmt ? { z: numFmt } : {}),
-    ...(totalBorder ? { border: { top: { style: "thin", color: { rgb: "10A696" } } } } : {}),
-  });
-
-  const setInput = (r, c, value, numFmt) =>
-    setCell(r, c, { v: value, t: "n", s: inputStyle(numFmt) });
-  const setLabel = (r, c, text, bold) =>
-    setCell(r, c, { v: text, t: "s", s: labelStyle(bold) });
-  const setFormula = (r, c, formula, numFmt, bold, totalBorder) =>
-    setCell(r, c, { f: formula, t: "n", s: formulaStyle(bold, numFmt, totalBorder) });
-
-  const PCT = "0.0%";
-  const USD = '"$"#,##0';
-  const USD2 = '"$"#,##0.00';
-  const NUM0 = "#,##0";
-  const DF = "0.000";
-
-  let R = 0;
-
-  // Title + subtitle
-  for (let c = 0; c <= 5; c++) {
-    setCell(R, c, {
-      v: c === 0 ? `DCF Model — ${a.companyName}` : "",
-      t: "s",
-      s: { fill: { fgColor: { rgb: CLR.teal } }, font: { bold: true, sz: 16, color: { rgb: CLR.black } }, alignment: { horizontal: "left", vertical: "center" } },
-    });
-  }
-  ws["!merges"].push({ s: { r: R, c: 0 }, e: { r: R, c: 5 } });
-  R++;
-  const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  for (let c = 0; c <= 5; c++) {
-    setCell(R, c, {
-      v: c === 0 ? `Generated by FinModel AI  ·  ${dateStr}  ·  teal cells are AI-sourced inputs, everything else is a live formula` : "",
-      t: "s",
-      s: { fill: { fgColor: { rgb: CLR.subBg } }, font: { italic: true, sz: 9, color: { rgb: CLR.mid } }, alignment: { horizontal: "left", vertical: "center" } },
-    });
-  }
-  ws["!merges"].push({ s: { r: R, c: 0 }, e: { r: R, c: 5 } });
-  R += 2;
-
-  // ── Assumptions block ──
-  setLabel(R, 0, "Assumptions", true); R++;
-  const rowBaseRevenue = R; setLabel(R, 0, "Base revenue ($)"); setInput(R, 1, a.baseRevenue, USD); R++;
-  const rowEbitdaMargin = R; setLabel(R, 0, "EBITDA margin"); setInput(R, 1, a.ebitdaMargin, PCT); R++;
-  const rowTax = R; setLabel(R, 0, "Tax rate"); setInput(R, 1, a.taxRate, PCT); R++;
-  const rowDA = R; setLabel(R, 0, "D&A (% of revenue)"); setInput(R, 1, a.daPct, PCT); R++;
-  const rowCapex = R; setLabel(R, 0, "CapEx (% of revenue)"); setInput(R, 1, a.capexPct, PCT); R++;
-  const rowNWC = R; setLabel(R, 0, "Change in NWC (% of revenue)"); setInput(R, 1, a.nwcPct, PCT); R++;
-  const rowWacc = R; setLabel(R, 0, "WACC"); setInput(R, 1, a.wacc, PCT); R++;
-  const rowTermGrowth = R; setLabel(R, 0, "Terminal growth rate"); setInput(R, 1, a.terminalGrowth, PCT); R++;
-  const rowNetDebt = R; setLabel(R, 0, "Net debt ($)"); setInput(R, 1, a.netDebt, USD); R++;
-  const rowShares = R; setLabel(R, 0, "Shares outstanding"); setInput(R, 1, a.sharesOutstanding, NUM0); R++;
-  R++;
-
-  // ── Projection table ──
-  setLabel(R, 0, "", true);
-  for (let yc = 1; yc <= 5; yc++) setCell(R, yc, { v: `Year ${yc}`, t: "s", s: { font: { bold: true, sz: 10, color: { rgb: CLR.black } }, fill: { fgColor: { rgb: CLR.teal } }, alignment: { horizontal: "right", vertical: "center" } } });
-  R++;
-
-  const rowGrowth = R; setLabel(R, 0, "Revenue growth");
-  for (let yc = 1; yc <= 5; yc++) setInput(R, yc, a.revenueGrowth[yc - 1], PCT);
-  R++;
-
-  const rowRevenue = R; setLabel(R, 0, "Revenue", true);
-  for (let yc = 1; yc <= 5; yc++) {
-    const f = yc === 1
-      ? `${abs(1, rowBaseRevenue)}*(1+${rel(yc, rowGrowth)})`
-      : `${rel(yc - 1, rowRevenue)}*(1+${rel(yc, rowGrowth)})`;
-    setFormula(R, yc, f, USD, true);
-  }
-  R++;
-
-  const rowEbitda = R; setLabel(R, 0, "EBITDA", true);
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowRevenue)}*${abs(1, rowEbitdaMargin)}`, USD, true);
-  R++;
-
-  const rowDAline = R; setLabel(R, 0, "D&A");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowRevenue)}*${abs(1, rowDA)}`, USD);
-  R++;
-
-  const rowEbit = R; setLabel(R, 0, "EBIT");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowEbitda)}-${rel(yc, rowDAline)}`, USD);
-  R++;
-
-  const rowTaxes = R; setLabel(R, 0, "Taxes");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `MAX(${rel(yc, rowEbit)},0)*${abs(1, rowTax)}`, USD);
-  R++;
-
-  const rowNopat = R; setLabel(R, 0, "NOPAT");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowEbit)}-${rel(yc, rowTaxes)}`, USD);
-  R++;
-
-  const rowCapexLine = R; setLabel(R, 0, "CapEx");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowRevenue)}*${abs(1, rowCapex)}`, USD);
-  R++;
-
-  const rowNwcLine = R; setLabel(R, 0, "Change in NWC");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowRevenue)}*${abs(1, rowNWC)}`, USD);
-  R++;
-
-  const rowUfcf = R; setLabel(R, 0, "Unlevered free cash flow", true);
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowNopat)}+${rel(yc, rowDAline)}-${rel(yc, rowCapexLine)}-${rel(yc, rowNwcLine)}`, USD, true, true);
-  R++;
-
-  const rowDF = R; setLabel(R, 0, "Discount factor");
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `1/(1+${abs(1, rowWacc)})^${yc}`, DF);
-  R++;
-
-  const rowPV = R; setLabel(R, 0, "Present value of FCF", true);
-  for (let yc = 1; yc <= 5; yc++) setFormula(R, yc, `${rel(yc, rowUfcf)}*${rel(yc, rowDF)}`, USD, true);
-  R++;
-  R++;
-
-  // ── Valuation ──
-  const rowSumPV = R; setLabel(R, 0, "Sum of PV (Years 1–5)"); setFormula(R, 1, `SUM(${rel(1, rowPV)}:${rel(5, rowPV)})`, USD); R++;
-  const rowTV = R; setLabel(R, 0, "Terminal value"); setFormula(R, 1, `${rel(5, rowUfcf)}*(1+${abs(1, rowTermGrowth)})/(${abs(1, rowWacc)}-${abs(1, rowTermGrowth)})`, USD); R++;
-  const rowPVTV = R; setLabel(R, 0, "PV of terminal value"); setFormula(R, 1, `${rel(1, rowTV)}*${rel(5, rowDF)}`, USD); R++;
-  const rowEV = R; setLabel(R, 0, "Enterprise value", true); setFormula(R, 1, `${rel(1, rowSumPV)}+${rel(1, rowPVTV)}`, USD, true, true); R++;
-  const rowLessDebt = R; setLabel(R, 0, "Less: net debt"); setFormula(R, 1, `-${abs(1, rowNetDebt)}`, USD); R++;
-  const rowEQ = R; setLabel(R, 0, "Equity value", true); setFormula(R, 1, `${rel(1, rowEV)}+${rel(1, rowLessDebt)}`, USD, true, true); R++;
-  const rowSharesRef = R; setLabel(R, 0, "Shares outstanding"); setFormula(R, 1, `${abs(1, rowShares)}`, NUM0); R++;
-  setLabel(R, 0, "Implied share price", true); setFormula(R, 1, `${rel(1, rowEQ)}/${rel(1, rowSharesRef)}`, USD2, true, true); R++;
-  R++;
-
-  // ── Sensitivity (computed snapshot — a native 2-variable data table isn't portable via this writer) ──
-  setLabel(R, 0, "Sensitivity — implied share price (snapshot)", true); R++;
-  setLabel(R, 0, "WACC ↓ / Terminal growth →");
-  sensitivity.growthSteps.forEach((g, gi) => {
-    setCell(R, gi + 1, { v: g, t: "n", z: PCT, s: { font: { bold: true, sz: 10, color: { rgb: CLR.black } }, fill: { fgColor: { rgb: CLR.teal } }, alignment: { horizontal: "right", vertical: "center" } } });
-  });
-  R++;
-  sensitivity.grid.forEach((row, wi) => {
-    setLabel(R, 0, `${(sensitivity.waccSteps[wi] * 100).toFixed(1)}%`, true);
-    row.forEach((cell, gi) => {
-      if (cell.error) {
-        setCell(R, gi + 1, { v: "n/a", t: "s", s: { font: { sz: 10, color: { rgb: "B00020" } }, alignment: { horizontal: "right", vertical: "center" } } });
-      } else {
-        setCell(R, gi + 1, { v: cell.price, t: "n", z: USD2, s: { font: { sz: 10, color: { rgb: CLR.dark } }, alignment: { horizontal: "right", vertical: "center" } } });
-      }
-    });
-    R++;
-  });
-  R++;
-
-  setLabel(R, 0, "Assumptions were generated by AI and should be verified; every calculation above is a live Excel formula.");
-  R++;
-
-  ws["!ref"] = XLSXStyle.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R, c: 5 } });
-  ws["!cols"] = colMax.map((w) => ({ wch: w }));
-  XLSXStyle.utils.book_append_sheet(wb, ws, "DCF Model");
-  XLSXStyle.writeFile(wb, `FinModel_DCF_${a.companyName.replace(/\s+/g, "_")}.xlsx`);
+function exportLBOToExcel(assumptions, sensitivity) {
+  const { wb } = buildLBOWorkbook(assumptions, sensitivity);
+  XLSXStyle.writeFile(wb, `FinModel_LBO_${assumptions.companyName.replace(/\s+/g, "_")}.xlsx`);
 }
 
 // ── Main Component ──────────────────────────────────────────────
@@ -667,11 +578,14 @@ export default function Home() {
   const [templateSel, setTemplateSel] = useState("");
   const [dcfFields, setDcfFields] = useState(null);
   const [dcfMsgIdx, setDcfMsgIdx] = useState(null);
+  const [lboFields, setLboFields] = useState(null);
+  const [lboMsgIdx, setLboMsgIdx] = useState(null);
 
   const bottomRef = useRef(null);
   const msgRefs = useRef({});
   const textareaRef = useRef(null);
   const dcfPanelRef = useRef(null);
+  const lboPanelRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -684,14 +598,19 @@ export default function Home() {
     return acc;
   }, []);
 
-  // Latest assistant message that contains a model — either a deterministic
-  // DCF (kind: "dcf") or a legacy markdown-table model (any other model type).
+  // Latest assistant message that contains a model — a deterministic DCF
+  // (kind: "dcf"), a deterministic LBO (kind: "lbo"), or a legacy
+  // markdown-table model (any other model type).
   let latestModel = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;
     if (m.kind === "dcf") {
       latestModel = { type: "dcf", idx: i, assumptions: m.assumptions, modelType: "DCF Model" };
+      break;
+    }
+    if (m.kind === "lbo") {
+      latestModel = { type: "lbo", idx: i, assumptions: m.assumptions, modelType: "LBO Model" };
       break;
     }
     const tables = parseMarkdownTables(m.content);
@@ -706,17 +625,36 @@ export default function Home() {
       setDcfFields(fieldsFromAssumptions(latestModel.assumptions));
       setDcfMsgIdx(latestModel.idx);
     }
+    if (latestModel?.type === "lbo" && latestModel.idx !== lboMsgIdx) {
+      setLboFields(fieldsFromLBOAssumptions(latestModel.assumptions));
+      setLboMsgIdx(latestModel.idx);
+    }
   }, [latestModel?.idx, latestModel?.type]);
 
-  const liveAssumptions = dcfFields ? assumptionsFromFields(dcfFields) : null;
-  const liveComputed = liveAssumptions ? computeDCF(liveAssumptions) : null;
-  const liveSensitivity = liveAssumptions ? computeSensitivity(liveAssumptions) : null;
+  const liveDcfAssumptions = dcfFields ? assumptionsFromFields(dcfFields) : null;
+  const liveDcfComputed = liveDcfAssumptions ? computeDCF(liveDcfAssumptions) : null;
+  const liveDcfSensitivity = liveDcfAssumptions ? computeDCFSensitivity(liveDcfAssumptions) : null;
 
   const updateDcfField = (key, value) => {
     setDcfFields((f) => ({ ...f, [key]: value }));
   };
   const updateDcfGrowth = (yearIdx, value) => {
     setDcfFields((f) => {
+      const growth = [...f.growth];
+      growth[yearIdx] = value;
+      return { ...f, growth };
+    });
+  };
+
+  const liveLboAssumptions = lboFields ? assumptionsFromLBOFields(lboFields) : null;
+  const liveLboComputed = liveLboAssumptions ? computeLBO(liveLboAssumptions) : null;
+  const liveLboSensitivity = liveLboAssumptions ? computeLBOSensitivity(liveLboAssumptions) : null;
+
+  const updateLboField = (key, value) => {
+    setLboFields((f) => ({ ...f, [key]: value }));
+  };
+  const updateLboGrowth = (yearIdx, value) => {
+    setLboFields((f) => {
       const growth = [...f.growth];
       growth[yearIdx] = value;
       return { ...f, growth };
@@ -743,10 +681,10 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
-      if (data.kind === "dcf") {
+      if (data.kind === "dcf" || data.kind === "lbo") {
         setMessages([...next, {
           role: "assistant",
-          kind: "dcf",
+          kind: data.kind,
           assumptions: data.assumptions,
           content: data.interpretation,
         }]);
@@ -897,7 +835,7 @@ export default function Home() {
                           className="message-content"
                           dangerouslySetInnerHTML={{ __html: formatMessage(displayText) }}
                         />
-                        {m.kind === "dcf" && (
+                        {(m.kind === "dcf" || m.kind === "lbo") && (
                           <p className="chat-model-note">The full interactive model is in the Model panel →</p>
                         )}
                         {m.role === "assistant" && (
@@ -983,16 +921,28 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              {latestModel?.type === "dcf" && liveComputed && (
+              {latestModel?.type === "dcf" && liveDcfComputed && (
                 <div className="model-panel-actions">
                   <button
                     className="panel-btn"
-                    onClick={() => copyMsg(dcfSummaryText(liveAssumptions, liveComputed), latestModel.idx)}
+                    onClick={() => copyMsg(dcfSummaryText(liveDcfAssumptions, liveDcfComputed), latestModel.idx)}
                   >
                     {copiedIdx === latestModel.idx ? "Copied" : "Copy"}
                   </button>
-                  <button className="panel-btn" onClick={() => exportDCFToExcel(liveAssumptions, liveSensitivity)}>Excel</button>
+                  <button className="panel-btn" onClick={() => exportDCFToExcel(liveDcfAssumptions, liveDcfSensitivity)}>Excel</button>
                   <button className="panel-btn" onClick={() => exportToPDF(dcfPanelRef.current?.innerHTML || "")}>PDF</button>
+                </div>
+              )}
+              {latestModel?.type === "lbo" && liveLboComputed && (
+                <div className="model-panel-actions">
+                  <button
+                    className="panel-btn"
+                    onClick={() => copyMsg(lboSummaryText(liveLboAssumptions, liveLboComputed), latestModel.idx)}
+                  >
+                    {copiedIdx === latestModel.idx ? "Copied" : "Copy"}
+                  </button>
+                  <button className="panel-btn" onClick={() => exportLBOToExcel(liveLboAssumptions, liveLboSensitivity)}>Excel</button>
+                  <button className="panel-btn" onClick={() => exportToPDF(lboPanelRef.current?.innerHTML || "")}>PDF</button>
                 </div>
               )}
             </div>
@@ -1032,7 +982,7 @@ export default function Home() {
                 ))
               )}
 
-              {latestModel?.type === "dcf" && dcfFields && liveComputed && (
+              {latestModel?.type === "dcf" && dcfFields && liveDcfComputed && (
                 <div className="dcf-panel" ref={dcfPanelRef}>
                   <div className="dcf-block">
                     <div className="dcf-section-title">Assumptions</div>
@@ -1076,7 +1026,7 @@ export default function Home() {
                         <thead>
                           <tr>
                             <th></th>
-                            {liveComputed.years.map((y) => <th key={y.year}>Year {y.year}</th>)}
+                            {liveDcfComputed.years.map((y) => <th key={y.year}>Year {y.year}</th>)}
                           </tr>
                         </thead>
                         <tbody>
@@ -1094,47 +1044,47 @@ export default function Home() {
                           </tr>
                           <tr className="row-section">
                             <td>Revenue</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.revenue)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.revenue)}</td>)}
                           </tr>
                           <tr className="row-section">
                             <td>EBITDA</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebitda)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebitda)}</td>)}
                           </tr>
                           <tr>
                             <td>D&A</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.da)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.da)}</td>)}
                           </tr>
                           <tr>
                             <td>EBIT</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebit)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebit)}</td>)}
                           </tr>
                           <tr>
                             <td>Taxes</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.taxes)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.taxes)}</td>)}
                           </tr>
                           <tr>
                             <td>NOPAT</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.nopat)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.nopat)}</td>)}
                           </tr>
                           <tr>
                             <td>CapEx</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.capex)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.capex)}</td>)}
                           </tr>
                           <tr>
                             <td>Change in NWC</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.nwcChange)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.nwcChange)}</td>)}
                           </tr>
                           <tr className="row-total">
                             <td>Unlevered free cash flow</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ufcf)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ufcf)}</td>)}
                           </tr>
                           <tr>
                             <td>Discount factor</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{y.discountFactor.toFixed(3)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{y.discountFactor.toFixed(3)}</td>)}
                           </tr>
                           <tr className="row-total">
                             <td>Present value of FCF</td>
-                            {liveComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.pv)}</td>)}
+                            {liveDcfComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.pv)}</td>)}
                           </tr>
                         </tbody>
                       </table>
@@ -1148,41 +1098,41 @@ export default function Home() {
                         <tbody>
                           <tr>
                             <td>Sum of PV (Years 1–5)</td>
-                            <td className="cell-num">{formatMoney(liveComputed.sumPV)}</td>
+                            <td className="cell-num">{formatMoney(liveDcfComputed.sumPV)}</td>
                           </tr>
                           <tr>
                             <td>Terminal value</td>
                             <td className="cell-num">
-                              {liveComputed.terminalValid
-                                ? formatMoney(liveComputed.terminalValue)
+                              {liveDcfComputed.terminalValid
+                                ? formatMoney(liveDcfComputed.terminalValue)
                                 : <span className="dcf-error">WACC ≤ terminal growth</span>}
                             </td>
                           </tr>
                           <tr>
                             <td>PV of terminal value</td>
-                            <td className="cell-num">{liveComputed.terminalValid ? formatMoney(liveComputed.pvTerminalValue) : "—"}</td>
+                            <td className="cell-num">{liveDcfComputed.terminalValid ? formatMoney(liveDcfComputed.pvTerminalValue) : "—"}</td>
                           </tr>
                           <tr className="row-total">
                             <td>Enterprise value</td>
-                            <td className="cell-num">{liveComputed.terminalValid ? formatMoney(liveComputed.enterpriseValue) : "—"}</td>
+                            <td className="cell-num">{liveDcfComputed.terminalValid ? formatMoney(liveDcfComputed.enterpriseValue) : "—"}</td>
                           </tr>
                           <tr>
                             <td>Less: net debt</td>
-                            <td className="cell-num">{formatMoney(-liveAssumptions.netDebt)}</td>
+                            <td className="cell-num">{formatMoney(-liveDcfAssumptions.netDebt)}</td>
                           </tr>
                           <tr className="row-total">
                             <td>Equity value</td>
-                            <td className="cell-num">{liveComputed.terminalValid ? formatMoney(liveComputed.equityValue) : "—"}</td>
+                            <td className="cell-num">{liveDcfComputed.terminalValid ? formatMoney(liveDcfComputed.equityValue) : "—"}</td>
                           </tr>
                           <tr>
                             <td>Shares outstanding</td>
-                            <td className="cell-num">{liveAssumptions.sharesOutstanding.toLocaleString("en-US")}</td>
+                            <td className="cell-num">{liveDcfAssumptions.sharesOutstanding.toLocaleString("en-US")}</td>
                           </tr>
                           <tr className="row-total">
                             <td>Implied share price</td>
                             <td className="cell-num dcf-price-highlight">
-                              {liveComputed.terminalValid
-                                ? formatPrice(liveComputed.impliedSharePrice)
+                              {liveDcfComputed.terminalValid
+                                ? formatPrice(liveDcfComputed.impliedSharePrice)
                                 : <span className="dcf-error">n/a</span>}
                             </td>
                           </tr>
@@ -1198,16 +1148,288 @@ export default function Home() {
                         <thead>
                           <tr>
                             <th>WACC ↓ / growth →</th>
-                            {liveSensitivity.growthSteps.map((g, gi) => <th key={gi}>{formatPct(g)}</th>)}
+                            {liveDcfSensitivity.growthSteps.map((g, gi) => <th key={gi}>{formatPct(g)}</th>)}
                           </tr>
                         </thead>
                         <tbody>
-                          {liveSensitivity.grid.map((row, wi) => (
+                          {liveDcfSensitivity.grid.map((row, wi) => (
                             <tr key={wi}>
-                              <td>{formatPct(liveSensitivity.waccSteps[wi])}</td>
+                              <td>{formatPct(liveDcfSensitivity.waccSteps[wi])}</td>
                               {row.map((cell, gi) => (
                                 <td key={gi} className="cell-num">
                                   {cell.error ? <span className="dcf-error">n/a</span> : formatPrice(cell.price)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="dcf-note">
+                    Assumptions were generated by AI and should be checked — the math above is calculated deterministically, not by the AI.
+                  </p>
+                </div>
+              )}
+
+              {latestModel?.type === "lbo" && lboFields && liveLboComputed && (
+                <div className="dcf-panel" ref={lboPanelRef}>
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Assumptions</div>
+                    <div className="dcf-assumptions-grid">
+                      <label className="dcf-field dcf-field--wide">
+                        <span>Company name</span>
+                        <input
+                          className="dcf-input dcf-input-text"
+                          value={lboFields.companyName}
+                          onChange={(e) => updateLboField("companyName", e.target.value)}
+                        />
+                      </label>
+                      {[
+                        ["entryRevenue", "Entry revenue ($)"],
+                        ["ebitdaMargin", "EBITDA margin (%)"],
+                        ["daPct", "D&A (% of revenue)"],
+                        ["capexPct", "CapEx (% of revenue)"],
+                        ["nwcPct", "Δ NWC (% of revenue)"],
+                        ["taxRate", "Tax rate (%)"],
+                        ["entryMultiple", "Entry EV / EBITDA (x)"],
+                        ["exitMultiple", "Exit EV / EBITDA (x)"],
+                        ["holdingPeriod", "Holding period (years)"],
+                        ["feePct", "Transaction fees (% of EV)"],
+                        ["minCash", "Minimum cash balance ($)"],
+                        ["seniorMultiple", "Senior debt (x EBITDA)"],
+                        ["seniorRate", "Senior interest rate (%)"],
+                        ["seniorAmortPct", "Senior mandatory amort (% of orig.)"],
+                        ["subMultiple", "Sub debt (x EBITDA)"],
+                        ["subRate", "Sub debt interest rate (%)"],
+                        ["sweepPct", "Cash sweep (% of excess FCF)"],
+                      ].map(([key, label]) => (
+                        <label className="dcf-field" key={key}>
+                          <span>{label}</span>
+                          <input
+                            className="dcf-input"
+                            value={lboFields[key]}
+                            onChange={(e) => updateLboField(key, e.target.value)}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Sources & uses</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <tbody>
+                          <tr>
+                            <td>Entry EBITDA</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.entryEbitda)}</td>
+                          </tr>
+                          <tr className="row-section">
+                            <td>Entry enterprise value</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.entryEV)}</td>
+                          </tr>
+                          <tr>
+                            <td>Transaction fees</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.transactionFees)}</td>
+                          </tr>
+                          <tr>
+                            <td>Minimum cash</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.minCash)}</td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>Total uses</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.uses)}</td>
+                          </tr>
+                          <tr>
+                            <td>Senior debt</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.seniorDebt)}</td>
+                          </tr>
+                          <tr>
+                            <td>Sub debt</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.sourcesUses.subDebt)}</td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>Sponsor equity (plug)</td>
+                            <td className="cell-num">
+                              {liveLboComputed.valid
+                                ? formatMoney(liveLboComputed.sourcesUses.sponsorEquity)
+                                : <span className="dcf-error">{formatMoney(liveLboComputed.sourcesUses.sponsorEquity)} — zero or negative</span>}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">5-year projection & debt schedule</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead>
+                          <tr>
+                            <th></th>
+                            {liveLboComputed.years.map((y) => <th key={y.year}>Year {y.year}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>Revenue growth</td>
+                            {lboFields.growth.map((g, gi) => (
+                              <td key={gi} className="cell-num dcf-cell-editable">
+                                <input
+                                  className="dcf-input dcf-input--cell"
+                                  value={g}
+                                  onChange={(e) => updateLboGrowth(gi, e.target.value)}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                          <tr className="row-section">
+                            <td>Revenue</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.revenue)}</td>)}
+                          </tr>
+                          <tr className="row-section">
+                            <td>EBITDA</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebitda)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>D&A</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.da)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>EBIT</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.ebit)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Interest expense</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.interestExpense)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Taxes</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.taxes)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Net income</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.netIncome)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>CapEx</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.capex)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Change in NWC</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.nwcChange)}</td>)}
+                          </tr>
+                          <tr className="row-total">
+                            <td>FCF for debt paydown</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.fcfForDebtPaydown)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Senior debt, beginning</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.seniorBeginBalance)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Mandatory amortization</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.mandatoryAmort)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Cash sweep</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.cashSweep)}</td>)}
+                          </tr>
+                          <tr className="row-section">
+                            <td>Senior debt, ending</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.seniorEndBalance)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Sub debt balance</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.subEndBalance)}</td>)}
+                          </tr>
+                          <tr className="row-section">
+                            <td>Cash balance</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.cash)}</td>)}
+                          </tr>
+                          <tr className="row-total">
+                            <td>Net debt</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMoney(y.netDebt)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>Total debt / EBITDA</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMultiple(y.debtToEbitda)}</td>)}
+                          </tr>
+                          <tr>
+                            <td>EBITDA / interest</td>
+                            {liveLboComputed.years.map((y) => <td key={y.year} className="cell-num">{formatMultiple(y.interestCoverage)}</td>)}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Exit & returns (Year {liveLboComputed.exit.year})</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <tbody>
+                          <tr>
+                            <td>Exit EBITDA</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.exit.exitEbitda)}</td>
+                          </tr>
+                          <tr className="row-section">
+                            <td>Exit enterprise value</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.exit.exitEV)}</td>
+                          </tr>
+                          <tr>
+                            <td>Exit net debt</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.exit.exitNetDebt)}</td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>Exit equity value</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.exit.exitEquityValue)}</td>
+                          </tr>
+                          <tr>
+                            <td>Sponsor proceeds</td>
+                            <td className="cell-num">{formatMoney(liveLboComputed.exit.sponsorProceeds)}</td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>MOIC</td>
+                            <td className="cell-num dcf-price-highlight">
+                              {liveLboComputed.valid
+                                ? formatMultiple(liveLboComputed.returns.moic)
+                                : <span className="dcf-error">n/a</span>}
+                            </td>
+                          </tr>
+                          <tr className="row-total">
+                            <td>IRR</td>
+                            <td className="cell-num dcf-price-highlight">
+                              {liveLboComputed.valid && liveLboComputed.returns.irr !== null
+                                ? formatPct(liveLboComputed.returns.irr)
+                                : <span className="dcf-error">n/a</span>}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="dcf-block">
+                    <div className="dcf-section-title">Sensitivity — sponsor IRR</div>
+                    <div className="model-table-wrap">
+                      <table className="model-table">
+                        <thead>
+                          <tr>
+                            <th>Entry ↓ / Exit →</th>
+                            {liveLboSensitivity.exitSteps.map((x, xi) => <th key={xi}>{formatMultiple(x, 1)}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {liveLboSensitivity.grid.map((row, ei) => (
+                            <tr key={ei}>
+                              <td>{formatMultiple(liveLboSensitivity.entrySteps[ei], 1)}</td>
+                              {row.map((cell, xi) => (
+                                <td key={xi} className="cell-num">
+                                  {cell.error ? <span className="dcf-error">n/a</span> : formatPct(cell.irr)}
                                 </td>
                               ))}
                             </tr>
